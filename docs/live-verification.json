@@ -1,0 +1,25 @@
+{
+  "testedAt": "2026-09-14T12:48:33.922Z",
+  "model": "gemini-3.6-flash",
+  "initialMs": 29514,
+  "revisionMs": 36434,
+  "initialCitations": 10,
+  "revisionCitations": 11,
+  "initialTokens": {
+    "input": 2882,
+    "output": 1404
+  },
+  "revisionTokens": {
+    "input": 6205,
+    "output": 2130
+  },
+  "checks": [
+    "live AI mode",
+    "accurate amounts",
+    "two deductions",
+    "duplicate upload creates no job",
+    "immutable first revision",
+    "stable deduction IDs",
+    "new source linked in change"
+  ]
+}

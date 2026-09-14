@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: trace-evidence
+    runtime: docker
+    plan: starter
+    numInstances: 1
+    healthCheckPath: /health
+    disk:
+      name: trace-records
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRACE_DATA_DIR
+        value: /data
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TRACE_SESSION_SECRET
+        generateValue: true
+      - key: TRACE_PUBLIC_ORIGIN
+        sync: false

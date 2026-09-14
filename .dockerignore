@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-server
+.env
+.env.*
+.trace*
+.git
+artifacts
+test-results
+*.log
