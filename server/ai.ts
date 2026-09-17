@@ -271,6 +271,7 @@ export function createJSONGenerator(
         signal.addEventListener("abort", abort, { once: true });
       });
     } else active++;
+    let lastErr: unknown;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (now() < cooldownUntil) throw quotaError();
@@ -299,6 +300,7 @@ export function createJSONGenerator(
             },
           });
         } catch (error) {
+          lastErr = error;
           const status = (error as { status?: number })?.status;
           if (status === 429) {
             stats.rateLimited++;
