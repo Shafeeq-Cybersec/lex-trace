@@ -379,17 +379,19 @@ export default function App() {
         </>
       ) : (
         <div className="statement-form">
-          <label className="field">
+          <label className="field" htmlFor="statement-title-input">
             Record title
             <input
+              id="statement-title-input"
               value={statementTitle}
               maxLength={100}
               onChange={(e) => setStatementTitle(e.target.value)}
             />
           </label>
-          <label className="field">
+          <label className="field" htmlFor="statement-text-input">
             What would you like to add?
             <textarea
+              id="statement-text-input"
               rows={7}
               maxLength={12000}
               value={statement}
@@ -406,8 +408,9 @@ export default function App() {
       <p className="sr-only" role="status" aria-atomic="true">
         {uploadFeedback}
       </p>
-      <label className="consent">
+      <label className="consent" htmlFor="consent-checkbox">
         <input
+          id="consent-checkbox"
           type="checkbox"
           checked={consent}
           onChange={(e) => setConsent(e.target.checked)}
@@ -620,9 +623,10 @@ export default function App() {
             <div className="intake-heading">
               <span className="eyebrow">YOUR FIRST REVIEW</span>
               <h2>Start with what you have.</h2>
-              <label className="field">
+              <label className="field" htmlFor="case-title-input">
                 Case name <span className="optional">(optional)</span>
                 <input
+                  id="case-title-input"
                   value={title}
                   maxLength={120}
                   onChange={(e) => setTitle(e.target.value)}

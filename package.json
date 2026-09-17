@@ -9,6 +9,8 @@
     "start": "node dist-server/server/index.js",
     "test": "tsc -p tsconfig.server.json && tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && prettier --check src server shared tests *.json *.ts",
+    "check": "npm run typecheck && npm run format:check && npm test",
     "format:check": "prettier --check src server shared tests *.json *.ts",
     "format": "prettier --write src server shared tests *.json *.ts"
   },
