@@ -20,10 +20,12 @@ export function DeductionCard({
     { role: "context", title: "Relevant context", icon: Minus },
   ];
   return (
-    <article className="finding">
+    <article className="finding" aria-labelledby="finding-title">
       <div className="eyebrow">DEDUCTION REVIEW</div>
       <div className="finding-heading">
-        <h2>{finding.title}</h2>
+        <h2 id="finding-title" tabIndex={-1}>
+          {finding.title}
+        </h2>
         <span className="finding-amount">{money(finding.amount)}</span>
       </div>
       <div className={"status status-" + finding.status}>
@@ -40,7 +42,7 @@ export function DeductionCard({
         return items.length ? (
           <section className="evidence-group" key={g.role}>
             <h3>
-              <g.icon size={17} />
+              <g.icon size={17} aria-hidden="true" />
               {g.title}
             </h3>
             {items.map((e) => (
@@ -60,7 +62,7 @@ export function DeductionCard({
       {!!finding.gaps.length && (
         <section className="gaps">
           <h3>
-            <HelpCircle size={18} />
+            <HelpCircle size={18} aria-hidden="true" />
             What would help clarify this
           </h3>
           {finding.gaps.map((g) => (

@@ -24,7 +24,7 @@ export function SourceInspector({
   const text =
     source.pages[page - 1] || "No extracted text is available for this page.";
   const quote = citation?.quote;
-  const index = quote ? text.indexOf(quote) : -1;
+  const index = quote && page === citation?.page ? text.indexOf(quote) : -1;
   return (
     <Modal
       title={source.title}
@@ -63,46 +63,6 @@ export function SourceInspector({
           message={source.error || "This record could not be read."}
         />
       )}
-      {!isExample && (
-        <div className="original">
-          {source.kind === "image" ? (
-            <img
-              src={url}
-              alt={"Original evidence: " + source.title}
-              onError={() => setFailed(true)}
-            />
-          ) : source.kind === "pdf" ? (
-            <object
-              key={source.id + page}
-              data={url + "#page=" + page}
-              type="application/pdf"
-              aria-label={"Original PDF, page " + page}
-            >
-              <p>
-                The PDF preview is unavailable.{" "}
-                <a
-                  href={url + "#page=" + page}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open the original PDF
-                </a>
-              </p>
-            </object>
-          ) : null}
-          {failed && (
-            <ErrorNotice message="The original preview could not load. Retry or open the original file." />
-          )}
-          <a
-            className="text-link"
-            href={url + "#page=" + page}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open original in a new tab ↗
-          </a>
-        </div>
-      )}
       {source.pages.length > 1 && (
         <label className="field">
           Page
@@ -118,26 +78,92 @@ export function SourceInspector({
           </select>
         </label>
       )}
-      <div className="source-transcript">
-        <h3>
+      <p className="sr-only" role="status" aria-atomic="true">
+        Showing page {page} of{" "}
+        {Math.max(1, source.pageCount || source.pages.length)}.
+      </p>
+      <section
+        className="source-transcript"
+        aria-labelledby="source-text-heading"
+      >
+        <h3 id="source-text-heading">
           {isExample
             ? "Example record text"
             : source.extractionMethod === "observation"
               ? "Visual observation / readable text"
               : "Accessible text"}
         </h3>
-        <pre>
+        {source.extractionMethod === "observation" ||
+        source.extractionMethod === "transcription" ? (
+          <p className="muted">
+            AI-derived text can omit or misread details. Compare it with the
+            original below.
+          </p>
+        ) : null}
+        <pre tabIndex={0} aria-label={`Record text, page ${page}`}>
           {index >= 0 && quote ? (
             <>
               {text.slice(0, index)}
-              <mark>{quote}</mark>
+              <mark>
+                <span className="sr-only">Cited excerpt begins. </span>
+                {quote}
+                <span className="sr-only"> Cited excerpt ends.</span>
+              </mark>
               {text.slice(index + quote.length)}
             </>
           ) : (
             text
           )}
         </pre>
-      </div>
+      </section>
+      {!isExample && (
+        <div className="original">
+          {source.kind === "image" ? (
+            <img
+              src={url}
+              alt={
+                "Original submitted image: " +
+                source.title +
+                ". An AI-generated description is available in the record text above."
+              }
+              onError={() => setFailed(true)}
+            />
+          ) : source.kind === "pdf" ? (
+            <details className="original-preview">
+              <summary>View original PDF preview</summary>
+              <object
+                key={source.id + page}
+                data={url + "#page=" + page}
+                type="application/pdf"
+                aria-label={"Original PDF, page " + page}
+                title={source.title + ", original PDF, page " + page}
+              >
+                <p>
+                  The PDF preview is unavailable.{" "}
+                  <a
+                    href={url + "#page=" + page}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open the original PDF in a new tab
+                  </a>
+                </p>
+              </object>
+            </details>
+          ) : null}
+          {failed && (
+            <ErrorNotice message="The original preview could not load. Retry or open the original file." />
+          )}
+          <a
+            className="text-link"
+            href={url + "#page=" + page}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open original in a new tab ↗
+          </a>
+        </div>
+      )}
       <details>
         <summary>File details</summary>
         <dl className="file-details">

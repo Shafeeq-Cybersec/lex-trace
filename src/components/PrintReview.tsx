@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { money, type TraceCase, type Revision } from "../../shared/types.js";
 export function PrintReview({
   currentCase,
@@ -9,8 +10,17 @@ export function PrintReview({
   onBack: () => void;
 }) {
   const f = revision.financials;
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
   return (
-    <main className="print-review">
+    <main
+      id="main-content"
+      className="print-review"
+      tabIndex={-1}
+      aria-labelledby="export-title"
+    >
       <div className="no-print print-actions">
         <button className="button" onClick={onBack}>
           ← Back to review
@@ -20,7 +30,9 @@ export function PrintReview({
         </button>
       </div>
       <div className="eyebrow">TRACE · EVIDENCE REVIEW</div>
-      <h1>{currentCase.title}</h1>
+      <h1 ref={titleRef} id="export-title" tabIndex={-1}>
+        {currentCase.title}
+      </h1>
       <p>
         Revision {revision.number} ·{" "}
         {new Date(revision.createdAt).toLocaleString()} ·{" "}

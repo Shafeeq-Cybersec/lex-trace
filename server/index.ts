@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import compression from "compression";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -13,6 +14,7 @@ import {
   extractSource,
   hasLiveAI,
   getModelName,
+  getReusableRevision,
   runCaseReconciliation,
   validateFile,
   hashBytes,
@@ -23,7 +25,21 @@ import type { Job, TraceCase, Source, Revision } from "../shared/types.js";
 
 const production = process.env.NODE_ENV === "production";
 const dir = process.env.TRACE_DATA_DIR || ".trace-v2";
+// Only deployment configuration can authorize a production origin. Never derive
+// this trust boundary from the attacker-controlled Host or forwarded headers.
+const configuredOrigin =
+  process.env.TRACE_PUBLIC_ORIGIN ||
+  (production ? process.env.RENDER_EXTERNAL_URL : undefined);
+const publicOrigin = configuredOrigin ? new URL(configuredOrigin).origin : null;
+if (production && (!publicOrigin || !publicOrigin.startsWith("https://"))) {
+  throw new Error(
+    "Set TRACE_PUBLIC_ORIGIN to the public HTTPS URL before starting production.",
+  );
+}
 let secret = process.env.TRACE_SESSION_SECRET;
+if (secret && secret.length < 32) {
+  throw new Error("TRACE_SESSION_SECRET must contain at least 32 characters.");
+}
 if (!secret) {
   const p = path.join(dir, "session.key");
   if (!fs.existsSync(p))
@@ -35,6 +51,15 @@ if (!secret) {
 }
 const app = express();
 if (production) app.set("trust proxy", 1);
+app.use(
+  compression({
+    threshold: 1024,
+    filter: (req, res) => {
+      if (req.headers["x-no-compression"]) return false;
+      return compression.filter(req, res);
+    },
+  }),
+);
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -49,10 +74,22 @@ app.use(
         upgradeInsecureRequests: production ? [] : null,
       },
     },
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginResourcePolicy: { policy: "same-origin" },
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
   }),
 );
 app.use(cookieParser(secret));
-app.use(express.json({ limit: "24kb" }));
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=()",
+  );
+  res.locals.requestId = randomUUID();
+  res.setHeader("X-Request-Id", res.locals.requestId);
+  next();
+});
 app.use(
   "/api",
   rateLimit({
@@ -64,18 +101,16 @@ app.use(
   }),
 );
 app.use("/api", (req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
-  res.locals.requestId = randomUUID();
   if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
     const origin = req.get("origin");
-    const allowed = process.env.TRACE_PUBLIC_ORIGIN;
-    const valid = allowed
-      ? origin === allowed
+    const valid = publicOrigin
+      ? origin === publicOrigin
       : !!origin &&
         [
           "http://127.0.0.1:5173",
           "http://localhost:5173",
-          `http://${req.get("host")}`,
+          `http://127.0.0.1:${Number(process.env.PORT || 3001)}`,
+          `http://localhost:${Number(process.env.PORT || 3001)}`,
         ].includes(origin);
     if (!valid || req.get("X-Trace-Request") !== "1") {
       res.status(403).json({
@@ -97,6 +132,31 @@ app.use("/api", (req, res, next) => {
   }
   res.locals.owner = owner;
   next();
+});
+app.use(express.json({ limit: "24kb" }));
+function requestError(message: string, status = 400) {
+  return Object.assign(new Error(message), { status, expose: true });
+}
+const creates = rateLimit({
+  windowMs: 60000,
+  limit: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error:
+      "Case creation limit reached. Wait one minute before starting another case.",
+  },
+});
+// Separate the model-spend budget from inexpensive polling and case reads.
+const reviews = rateLimit({
+  windowMs: 60000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error:
+      "Review limit reached. Your saved records remain available. Retry in one minute.",
+  },
 });
 const capability = () => ({
   liveAI: hasLiveAI(),
@@ -189,7 +249,7 @@ async function processJob(job: Job, exampleAddition: boolean) {
             .map(async (source, batchIndex) => {
               const i = offset + batchIndex;
               if (source.status === "ready") return;
-              const file = storage.getFile(source.id);
+              const file = storage.getFile(source.id, c.id);
               if (!file)
                 throw new Error(
                   "An original file is unavailable. Previous review preserved.",
@@ -217,7 +277,13 @@ async function processJob(job: Job, exampleAddition: boolean) {
               }
             }),
         );
-        if (!storage.getCase(c.id)) return;
+        const current = storage.getCase(c.id);
+        if (
+          !current ||
+          current.activeJobId !== job.id ||
+          current.generation + 1 !== job.generation
+        )
+          return;
         storage.saveCase(c);
       }
       if (
@@ -241,9 +307,18 @@ async function processJob(job: Job, exampleAddition: boolean) {
     if (
       !current ||
       current.activeJobId !== job.id ||
-      current.generation + 1 !== job.generation
-    )
+      current.generation + 1 !== job.generation ||
+      new Date(current.expiresAt).getTime() <= Date.now()
+    ) {
+      reviewCache.deleteScope(c.id);
+      if (current) {
+        job.status = "superseded";
+        job.stage = "This review no longer matches the current case";
+        job.completedAt = new Date().toISOString();
+        storage.saveJob(job);
+      }
       return;
+    }
     c.revisions.push(revision);
     c.latestRevisionId = revision.id;
     c.generation = revision.generation;
@@ -274,7 +349,7 @@ async function processJob(job: Job, exampleAddition: boolean) {
     );
   } catch (e) {
     const c = storage.getCase(job.caseId);
-    if (c) {
+    if (c && c.activeJobId === job.id) {
       job.status = "failed";
       job.error =
         e instanceof Error
@@ -296,6 +371,7 @@ async function processJob(job: Job, exampleAddition: boolean) {
       }),
     );
   } finally {
+    if (!storage.getCase(job.caseId)) reviewCache.deleteScope(job.caseId);
     active--;
   }
 }
@@ -305,6 +381,11 @@ app.get("/api/health", (_req, res) =>
     aiConfigured: hasLiveAI(),
     model: getModelName(),
     cacheSize: reviewCache.size(),
+    release: /^[a-zA-Z0-9._-]{1,80}$/.test(
+      process.env.RENDER_GIT_COMMIT || process.env.TRACE_RELEASE || "local",
+    )
+      ? process.env.RENDER_GIT_COMMIT || process.env.TRACE_RELEASE || "local"
+      : "unknown",
     timestamp: new Date().toISOString(),
   }),
 );
@@ -312,7 +393,7 @@ app.get("/api/capabilities", (_req, res) => res.json(capability()));
 app.get("/api/cases", (_req, res) =>
   res.json(storage.listCases(res.locals.owner)),
 );
-app.post("/api/cases", (req, res) => {
+app.post("/api/cases", creates, (req, res) => {
   if (storage.listCases(res.locals.owner).length >= 12) {
     res.status(429).json({
       error: "You have 12 cases. Delete an old case before starting another.",
@@ -332,7 +413,13 @@ app.get("/api/case/:id", (req, res) =>
     capabilities: capability(),
   }),
 );
-app.post("/api/case/example/load", (_req, res) => {
+app.post("/api/case/example/load", creates, (_req, res) => {
+  if (storage.listCases(res.locals.owner).length >= 12) {
+    throw requestError(
+      "You have 12 cases. Delete an old case before starting another.",
+      429,
+    );
+  }
   const c = createInitialDemoCase();
   c.id = randomUUID();
   c.ownerId = res.locals.owner;
@@ -364,7 +451,14 @@ app.post("/api/case/example/load", (_req, res) => {
 });
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 12, fields: 0 },
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 12,
+    fields: 0,
+    parts: 12,
+    fieldNameSize: 100,
+    headerPairs: 50,
+  },
 });
 const uploads = rateLimit({
   windowMs: 60000,
@@ -373,11 +467,38 @@ const uploads = rateLimit({
   legacyHeaders: false,
   message: { error: "Upload limit reached. Wait one minute and retry." },
 });
+let receivingUploads = 0;
 app.post(
   "/api/case/:id/upload-batch",
   uploads,
+  reviews,
   (req, res, next) => {
-    owned(String(req.params.id), res.locals.owner);
+    const c = owned(String(req.params.id), res.locals.owner);
+    mutable(c);
+    if (c.isExample)
+      throw requestError(
+        "Start a live case to upload your own evidence. The example stays separate.",
+      );
+    if (receivingUploads >= 1)
+      throw requestError(
+        "Another upload is being received. Retry shortly; your saved evidence is unchanged.",
+        429,
+      );
+    if (Number(req.headers["content-length"] || 0) > 81 * 1024 * 1024) {
+      throw requestError(
+        "Upload exceeds the 80 MB case limit. Choose fewer files.",
+        413,
+      );
+    }
+    receivingUploads++;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      receivingUploads--;
+    };
+    res.once("close", release);
+    res.once("finish", release);
     next();
   },
   upload.array("files", 12),
@@ -392,12 +513,22 @@ app.post(
         { status: 400 },
       );
     const files = (req.files as Express.Multer.File[]) || [];
-    if (!files.length) throw new Error("Choose at least one evidence file.");
+    if (!files.length) throw requestError("Choose at least one evidence file.");
     const existing = new Set(c.sources.map((s) => s.hash));
     const additions = files
       .map((f) => ({
         f,
-        mime: validateFile(f.buffer, f.originalname),
+        mime: (() => {
+          try {
+            return validateFile(f.buffer, f.originalname);
+          } catch (e) {
+            throw requestError(
+              e instanceof Error
+                ? e.message
+                : "This file type is not supported.",
+            );
+          }
+        })(),
         hash: hashBytes(f.buffer),
       }))
       .filter((x) => {
@@ -420,7 +551,7 @@ app.post(
         additions.reduce((n, x) => n + x.f.size, 0) >
         80 * 1024 * 1024
     )
-      throw new Error(
+      throw requestError(
         "Case limit reached: 12 files and 80 MB total. Start a smaller case.",
       );
     if (
@@ -428,7 +559,7 @@ app.post(
         additions.filter((a) => a.mime.startsWith("image/")).length >
       6
     )
-      throw new Error("A case can contain at most 6 images.");
+      throw requestError("A case can contain at most 6 images.");
     storage.transaction(() => {
       for (const { f, mime, hash } of additions) {
         const id = randomUUID();
@@ -467,11 +598,11 @@ app.post(
     res.status(202).json({ jobId: job.id });
   },
 );
-app.post("/api/case/:id/statement", (req, res) => {
+app.post("/api/case/:id/statement", reviews, (req, res) => {
   const c = owned(String(req.params.id), res.locals.owner);
   mutable(c);
   if (c.isExample)
-    throw new Error(
+    throw requestError(
       "User statements belong in a live case, not the prepared example.",
     );
   const { text, title } = z
@@ -486,7 +617,7 @@ app.post("/api/case/:id/statement", (req, res) => {
     })
     .parse(req.body);
   if (c.sources.length >= 12)
-    throw new Error("This case already contains 12 records.");
+    throw requestError("This case already contains 12 records.");
   const content =
     "User-provided information. Not independently verified.\n" + text;
   const hash = hashBytes(content);
@@ -523,13 +654,31 @@ app.post("/api/case/:id/statement", (req, res) => {
   });
   res.status(202).json({ jobId: enqueue(c).id });
 });
-app.post("/api/case/:id/review", (req, res) => {
-  const c = owned(String(req.params.id), res.locals.owner);
-  if (!c.sources.length)
-    throw new Error("Add evidence before requesting a review.");
-  res.status(202).json({ jobId: enqueue(c).id });
-});
-app.post("/api/case/:id/add-demo-addition", (req, res) => {
+app.post(
+  "/api/case/:id/review",
+  (req, res, next) => {
+    const c = owned(String(req.params.id), res.locals.owner);
+    mutable(c);
+    if (!c.sources.length)
+      throw requestError("Add evidence before requesting a review.");
+    if (getReusableRevision(c)) {
+      res.json({
+        jobId: null,
+        message:
+          "These records are already reviewed. Add new evidence to create a revision.",
+      });
+      return;
+    }
+    next();
+  },
+  reviews,
+  (req, res) => {
+    res.status(202).json({
+      jobId: enqueue(owned(String(req.params.id), res.locals.owner)).id,
+    });
+  },
+);
+app.post("/api/case/:id/add-demo-addition", reviews, (req, res) => {
   const c = owned(String(req.params.id), res.locals.owner);
   if (!c.isExample)
     throw Object.assign(
@@ -547,7 +696,7 @@ app.post("/api/case/:id/add-demo-addition", (req, res) => {
 });
 app.get("/api/case/:id/jobs/:jobId", (req, res) => {
   const c = owned(String(req.params.id), res.locals.owner);
-  const j = storage.getJob(String(req.params.jobId));
+  const j = storage.getJob(String(req.params.jobId), c.id);
   if (!j || j.caseId !== c.id) {
     res.status(404).json({ error: "Job unavailable for this case." });
     return;
@@ -570,13 +719,14 @@ app.get("/api/case/:id/sources/:sourceId/file", (req, res) => {
       );
     return;
   }
-  const file = storage.getFile(s.id);
+  const file = storage.getFile(s.id, c.id);
   if (!file || file.case_id !== c.id) {
     res.status(404).json({ error: "The original file is unavailable." });
     return;
   }
   res.setHeader("Content-Type", file.mime);
   res.setHeader("Content-Disposition", "inline");
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
   res.send(Buffer.from(file.bytes));
 });
 app.delete("/api/case/:id", (req, res) => {
@@ -591,8 +741,29 @@ app.use("/api", (_req, res) =>
   res.status(404).json({ error: "This operation is not available." }),
 );
 if (fs.existsSync(path.resolve("dist/index.html"))) {
-  app.use(express.static(path.resolve("dist"), { index: false }));
-  app.get("/", (_req, res) => res.sendFile(path.resolve("dist/index.html")));
+  app.use(
+    express.static(path.resolve("dist"), {
+      index: false,
+      maxAge: 0,
+      immutable: false,
+      setHeaders: (res, filePath) => {
+        const fingerprinted =
+          filePath.startsWith(path.resolve("dist/assets") + path.sep) &&
+          /-[a-zA-Z0-9_-]{8,}\.(js|css|woff2?)$/.test(path.basename(filePath));
+        res.setHeader(
+          "Cache-Control",
+          fingerprinted
+            ? "public, max-age=31536000, immutable"
+            : "no-cache, must-revalidate",
+        );
+      },
+    }),
+  );
+  app.get("/", (_req, res) =>
+    res.sendFile(path.resolve("dist/index.html"), {
+      headers: { "Cache-Control": "no-cache, must-revalidate" },
+    }),
+  );
 }
 app.use(
   (
@@ -601,21 +772,48 @@ app.use(
     res: express.Response,
     _next: express.NextFunction,
   ) => {
-    const e = err as { status?: number; message?: string; code?: string };
+    if (res.headersSent) return;
+    const e = err as {
+      status?: number;
+      message?: string;
+      code?: string;
+      type?: string;
+      expose?: boolean;
+    };
+    const status =
+      err instanceof multer.MulterError || err instanceof z.ZodError
+        ? 400
+        : e.type === "entity.parse.failed"
+          ? 400
+          : e.type === "entity.too.large"
+            ? 413
+            : e.status && e.status >= 400 && e.status < 500
+              ? e.status
+              : 500;
     const message =
       err instanceof multer.MulterError
         ? "Upload rejected: use at most 12 files, no larger than 10 MB each."
         : err instanceof z.ZodError
           ? "Some fields are invalid. Check the text and try again."
-          : e.message ||
-            "This operation could not finish. Your previous review remains available.";
+          : e.type === "entity.parse.failed"
+            ? "The request was not valid JSON. Reload TRACE and try again."
+            : e.type === "entity.too.large"
+              ? "The request exceeds the allowed size. Shorten the statement or choose smaller files."
+              : e.type
+                ? "The request format is not supported. Reload TRACE and try again."
+                : status < 500 && e.status
+                  ? e.message
+                  : "This operation could not finish. Your saved evidence and previous review remain available. Retry, or use the request ID when reporting this error.";
+    if (status >= 500)
+      console.error(
+        JSON.stringify({
+          event: "request.failed",
+          requestId: res.locals.requestId,
+          status,
+        }),
+      );
     res
-      .status(
-        e.status ||
-          (err instanceof multer.MulterError || err instanceof z.ZodError
-            ? 400
-            : 400),
-      )
+      .status(status)
       .json({ error: message, requestId: res.locals.requestId });
   },
 );
@@ -629,6 +827,8 @@ const server = app.listen(
   process.env.HOST || "127.0.0.1",
   () => console.log("TRACE ready on port " + (process.env.PORT || 3001)),
 );
+server.requestTimeout = 60000;
+server.headersTimeout = 20000;
 process.on("SIGTERM", () =>
   server.close(() => {
     storage.close();

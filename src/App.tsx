@@ -30,6 +30,7 @@ import { Modal, Cite, ErrorNotice } from "./components/UI.js";
 import { DeductionCard } from "./components/DeductionCard.js";
 import { SourceInspector } from "./components/SourceInspector.js";
 import { PrintReview } from "./components/PrintReview.js";
+import { CaseViewTabs } from "./components/CaseViewTabs.js";
 
 export default function App() {
   const [current, setCurrent] = useState<TraceCase | null>(null),
@@ -61,6 +62,11 @@ export default function App() {
   const inputRef = useRef<HTMLInputElement>(null),
     [drag, setDrag] = useState(false);
   const mounted = useRef(true);
+  const mainRef = useRef<HTMLElement>(null);
+  const exportRef = useRef<HTMLButtonElement>(null);
+  const focusMainOnNavigation = useRef(false);
+  const returnFromPrint = useRef(false);
+  const [uploadFeedback, setUploadFeedback] = useState("");
   const revision =
     current?.revisions.find((r) => r.id === viewId) ||
     current?.revisions.at(-1);
@@ -75,6 +81,7 @@ export default function App() {
     setInspect({ id: citation.sourceId, citation });
   const refreshList = async () => setCases(await api.fetchCases());
   function openCase(c: TraceCase) {
+    focusMainOnNavigation.current = true;
     setCurrent(c);
     setViewId(c.latestRevisionId || "");
     setSelected(c.revisions.at(-1)?.findings[0]?.id || "");
@@ -84,6 +91,16 @@ export default function App() {
     setInspect(null);
     localStorage.setItem("trace_v2_case", c.id);
   }
+  useEffect(() => {
+    if (loading || printing) return;
+    if (returnFromPrint.current) {
+      returnFromPrint.current = false;
+      exportRef.current?.focus();
+    } else if (focusMainOnNavigation.current) {
+      focusMainOnNavigation.current = false;
+      mainRef.current?.focus();
+    }
+  }, [current?.id, loading, printing]);
   useEffect(() => {
     mounted.current = true;
     (async () => {
@@ -216,6 +233,9 @@ export default function App() {
         (f) => !prev.some((p) => p.name === f.name && p.size === f.size),
       ),
     ]);
+    setUploadFeedback(
+      `${incoming.length} file${incoming.length === 1 ? "" : "s"} selected. Review the file list before submitting.`,
+    );
     setError("");
   }
   const submit = () =>
@@ -254,10 +274,17 @@ export default function App() {
     setNewReady(false);
     setTab(current.revisions.length > 1 ? "changes" : "review");
     setInspect(null);
+    requestAnimationFrame(() =>
+      document.getElementById("case-view-panel")?.focus(),
+    );
   }
   const uploadUI = (
     <div className="intake-form">
-      <div className="input-switch">
+      <div
+        className="input-switch"
+        role="group"
+        aria-label="Evidence input method"
+      >
         <button
           aria-pressed={inputMode === "files"}
           onClick={() => setInputMode("files")}
@@ -298,6 +325,7 @@ export default function App() {
             <input
               ref={inputRef}
               type="file"
+              aria-label="Evidence files"
               accept=".pdf,.png,.jpg,.jpeg,.txt"
               multiple
               hidden
@@ -308,11 +336,14 @@ export default function App() {
             />
             <button
               className="button"
+              aria-describedby="upload-formats"
               onClick={() => inputRef.current?.click()}
             >
               Choose files <Plus size={16} />
             </button>
-            <small>PDF, PNG, JPEG or TXT · 10 MB each · 12 records</small>
+            <small id="upload-formats">
+              PDF, PNG, JPEG or TXT · 10 MB each · 12 records
+            </small>
           </div>
           {!!files.length && (
             <ul className="staged">
@@ -329,7 +360,15 @@ export default function App() {
                   <button
                     className="icon-button"
                     aria-label={"Remove " + f.name}
-                    onClick={() => setFiles((v) => v.filter((_, j) => i !== j))}
+                    onClick={() => {
+                      setFiles((v) => v.filter((_, j) => i !== j));
+                      setUploadFeedback(
+                        `${f.name} removed from the upload list.`,
+                      );
+                      inputRef.current?.parentElement
+                        ?.querySelector<HTMLButtonElement>("button")
+                        ?.focus();
+                    }}
                   >
                     <X size={16} />
                   </button>
@@ -364,6 +403,9 @@ export default function App() {
           </p>
         </div>
       )}
+      <p className="sr-only" role="status" aria-atomic="true">
+        {uploadFeedback}
+      </p>
       <label className="consent">
         <input
           type="checkbox"
@@ -372,21 +414,23 @@ export default function App() {
         />
         <span>
           I can share these records for review. Live processing sends their
-          content to Google Gemini. Cases are retained here for 24 hours.{" "}
-          <button
-            className="inline-button"
-            onClick={(e) => {
-              e.preventDefault();
-              setModal("privacy");
-            }}
-          >
-            Privacy details
-          </button>
+          content to Google Gemini. Cases are retained here for 24 hours.
         </span>
       </label>
+      <details className="consent-details">
+        <summary>Privacy details</summary>
+        <p>
+          Your records and AI assessments are stored on this server. This
+          browser session and the server operator can access them. Google Gemini
+          receives evidence content for live processing; its retention follows
+          the API account terms. Deleting a case removes its active records
+          here, but not exports, backups or provider logs.
+        </p>
+      </details>
       <button
         className="button primary full"
         onClick={submit}
+        aria-describedby="intake-requirements"
         disabled={
           busy ||
           running ||
@@ -403,6 +447,17 @@ export default function App() {
         {current ? "Add evidence & reassess" : "Start evidence review"}
         <ArrowRight size={17} />
       </button>
+      <p id="intake-requirements" className="muted intake-requirements">
+        {running
+          ? "A review is already in progress."
+          : !consent
+            ? "Choose evidence and confirm the processing notice to start."
+            : inputMode === "files" && !files.length
+              ? "Choose at least one record to continue."
+              : inputMode === "statement" && statement.trim().length < 5
+                ? "Enter a statement of at least 5 characters to continue."
+                : "Your records will be saved before review starts."}
+      </p>
       {!caps?.liveAI && (
         <p className="setup-note">
           Live AI is not configured on this server. You can explore the clearly
@@ -413,29 +468,30 @@ export default function App() {
   );
   if (loading)
     return (
-      <div className="boot" role="status">
+      <main id="main-content" className="boot" tabIndex={-1} role="status">
         <span className="brand-mark">T</span>
         <p>Opening TRACE…</p>
-      </div>
+      </main>
     );
   if (printing && current && revision)
     return (
       <PrintReview
         currentCase={current}
         revision={revision}
-        onBack={() => setPrinting(false)}
+        onBack={() => {
+          returnFromPrint.current = true;
+          setPrinting(false);
+        }}
       />
     );
   return (
     <div className="app">
-      <a className="skip-link" href="#main">
-        Skip to review
-      </a>
       <header className="app-header">
         <button
           className="brand"
           aria-label="TRACE home"
           onClick={() => {
+            focusMainOnNavigation.current = true;
             setCurrent(null);
             setFiles([]);
             setJob(null);
@@ -467,10 +523,10 @@ export default function App() {
         </div>
       </header>
       <div className="app-notices">
-        {error && (
+        {error && !modal && (
           <ErrorNotice message={error} onDismiss={() => setError("")} />
         )}
-        <div role="status" aria-live="polite">
+        <div role="status" aria-live="polite" aria-atomic="true">
           {notice && (
             <div className="notice notice-success">
               <Check size={17} />
@@ -487,12 +543,18 @@ export default function App() {
         </div>
       </div>
       {!current ? (
-        <main id="main" className="home">
+        <main
+          id="main-content"
+          className="home"
+          ref={mainRef}
+          tabIndex={-1}
+          aria-labelledby="page-title"
+        >
           <section className="home-copy">
             <div className="eyebrow">
               <span className="tiny-line" /> RENTAL DEPOSIT EVIDENCE REVIEW
             </div>
-            <h1>
+            <h1 id="page-title">
               Every deduction
               <br />
               has a story.
@@ -602,7 +664,13 @@ export default function App() {
           )}
         </main>
       ) : (
-        <main id="main" className="workspace">
+        <main
+          id="main-content"
+          className="workspace"
+          ref={mainRef}
+          tabIndex={-1}
+          aria-labelledby="page-title"
+        >
           <div className="case-heading">
             <div>
               <div className="eyebrow">
@@ -610,7 +678,7 @@ export default function App() {
                   ? "SYNTHETIC EXAMPLE · NO AI CALL"
                   : "YOUR EVIDENCE REVIEW"}
               </div>
-              <h1>{current.title}</h1>
+              <h1 id="page-title">{current.title}</h1>
               <p>
                 {current.sources.length} records ·{" "}
                 {revision
@@ -646,6 +714,7 @@ export default function App() {
               )}
               <button
                 className="button"
+                ref={exportRef}
                 disabled={!revision}
                 onClick={() => setPrinting(true)}
               >
@@ -654,6 +723,7 @@ export default function App() {
               </button>
               <button
                 className="button primary"
+                aria-haspopup="dialog"
                 disabled={busy || running || current.isExample}
                 onClick={() => {
                   setFiles([]);
@@ -668,6 +738,7 @@ export default function App() {
                 className="icon-button"
                 disabled={running}
                 aria-label="Delete this case"
+                aria-haspopup="dialog"
                 onClick={() => setModal("delete")}
               >
                 <Trash2 size={18} />
@@ -710,6 +781,7 @@ export default function App() {
                 "processing " + (job?.status === "failed" ? "paused" : "")
               }
               role="status"
+              aria-live="polite"
             >
               {running ? (
                 <LoaderCircle size={21} className="spin" />
@@ -736,7 +808,7 @@ export default function App() {
             </div>
           )}
           {newReady && (
-            <div className="new-review" role="status">
+            <div className="new-review" role="status" aria-live="polite">
               <div>
                 <strong>New review ready</strong>
                 <p>
@@ -781,6 +853,8 @@ export default function App() {
                     {item.cite && (
                       <button
                         className="inline-button"
+                        aria-label={`View source for ${item.label.toLowerCase()}`}
+                        aria-haspopup="dialog"
                         onClick={() => selectCitation(item.cite!)}
                       >
                         View source ↗
@@ -789,28 +863,17 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <nav className="review-tabs" aria-label="Case views">
-                <button
-                  aria-current={tab === "review" ? "page" : undefined}
-                  onClick={() => setTab("review")}
-                >
-                  Deduction review <span>{revision.findings.length}</span>
-                </button>
-                <button
-                  aria-current={tab === "evidence" ? "page" : undefined}
-                  onClick={() => setTab("evidence")}
-                >
-                  Evidence <span>{current.sources.length}</span>
-                </button>
-                <button
-                  aria-current={tab === "changes" ? "page" : undefined}
-                  disabled={revision.number < 2}
-                  onClick={() => setTab("changes")}
-                >
-                  What changed <span>{revision.changes.length}</span>
-                </button>
+              <CaseViewTabs
+                value={tab}
+                onChange={setTab}
+                findingCount={revision.findings.length}
+                sourceCount={current.sources.length}
+                changeCount={revision.changes.length}
+                canCompare={revision.number > 1}
+              >
                 <button
                   className="audit-button"
+                  aria-haspopup="dialog"
                   onClick={() => setModal("audit")}
                 >
                   {revision.mode === "example"
@@ -818,178 +881,199 @@ export default function App() {
                     : "AI processing details"}{" "}
                   <ArrowUpRight size={14} />
                 </button>
-              </nav>
+              </CaseViewTabs>
             </>
           )}
-          {tab === "review" && revision && finding ? (
-            <div className="review-layout">
-              <aside className="deduction-list" aria-label="Deductions">
-                <div className="eyebrow">DISPUTED CHARGES</div>
-                {revision.findings.map((f, i) => (
-                  <button
-                    key={f.id}
-                    className={finding.id === f.id ? "selected" : ""}
-                    aria-pressed={finding.id === f.id}
-                    onClick={() => setSelected(f.id)}
-                  >
-                    <span className="issue-index">
-                      {String(i + 1).padStart(2, "0")}
-                    </span>
-                    <span>
-                      <strong>{f.title}</strong>
-                      <small>{money(f.amount)} claimed</small>
-                    </span>
-                    <ChevronRight size={16} />
-                  </button>
-                ))}
-                <p className="sidebar-note">
-                  <ShieldCheck size={17} />
-                  Assessments reflect submitted evidence, not a legal decision.
-                </p>
-              </aside>
-              <DeductionCard
-                finding={finding}
-                onSelectCitation={selectCitation}
-              />
-            </div>
-          ) : tab === "changes" && revision ? (
-            <section className="changes">
-              <div className="eyebrow">
-                REVISION {revision.number - 1} → {revision.number}
+          <div
+            id="case-view-panel"
+            role={revision ? "tabpanel" : undefined}
+            aria-labelledby={revision ? `case-tab-${tab}` : undefined}
+            tabIndex={revision ? 0 : undefined}
+          >
+            {tab === "review" && revision && finding ? (
+              <div className="review-layout">
+                <aside className="deduction-list" aria-label="Deductions">
+                  <div className="eyebrow">DISPUTED CHARGES</div>
+                  {revision.findings.map((f, i) => (
+                    <button
+                      key={f.id}
+                      className={finding.id === f.id ? "selected" : ""}
+                      aria-pressed={finding.id === f.id}
+                      aria-controls="finding-title"
+                      onClick={() => {
+                        setSelected(f.id);
+                        requestAnimationFrame(() =>
+                          document.getElementById("finding-title")?.focus(),
+                        );
+                      }}
+                    >
+                      <span className="issue-index">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span>
+                        <strong>{f.title}</strong>
+                        <small>{money(f.amount)} claimed</small>
+                      </span>
+                      <ChevronRight size={16} />
+                    </button>
+                  ))}
+                  <p className="sidebar-note">
+                    <ShieldCheck size={17} />
+                    Assessments reflect submitted evidence, not a legal
+                    decision.
+                  </p>
+                </aside>
+                <DeductionCard
+                  finding={finding}
+                  onSelectCitation={selectCitation}
+                />
               </div>
-              <h2>A clearer picture of what happened.</h2>
-              <p className="muted">
-                Changes to the assessment, with the records that prompted them.
-              </p>
-              {revision.changes.length ? (
-                revision.changes.map((ch) => (
-                  <article className="change" key={ch.findingId}>
-                    <div className="section-heading">
-                      <h3>{ch.title}</h3>
-                      <span className="status status-qualified">{ch.kind}</span>
-                    </div>
-                    <div className="change-columns">
-                      <div>
-                        <span className="eyebrow">PREVIOUSLY</span>
-                        <p>
-                          {ch.before || "Not included in the previous review."}
-                        </p>
+            ) : tab === "changes" && revision ? (
+              <section className="changes">
+                <div className="eyebrow">
+                  REVISION {revision.number - 1} → {revision.number}
+                </div>
+                <h2>A clearer picture of what happened.</h2>
+                <p className="muted">
+                  Changes to the assessment, with the records that prompted
+                  them.
+                </p>
+                {revision.changes.length ? (
+                  revision.changes.map((ch) => (
+                    <article className="change" key={ch.findingId}>
+                      <div className="section-heading">
+                        <h3>{ch.title}</h3>
+                        <span className="status status-qualified">
+                          {ch.kind}
+                        </span>
                       </div>
-                      <div>
-                        <span className="eyebrow">NOW</span>
-                        <p>{ch.after}</p>
-                      </div>
-                    </div>
-                    <p className="change-reason">{ch.reason}</p>
-                    <div className="source-buttons">
-                      {ch.sourceIds.map((id) => (
-                        <button
-                          className="citation"
-                          key={id}
-                          onClick={() => setInspect({ id })}
-                        >
-                          {current.sources.find((s) => s.id === id)?.title ||
-                            "Source"}{" "}
-                          <ArrowUpRight size={13} />
-                        </button>
-                      ))}
-                    </div>
-                    {!!ch.unchanged.length && (
-                      <div className="unchanged">
-                        <Check size={16} />
+                      <div className="change-columns">
                         <div>
-                          <strong>Preserved findings</strong>
-                          {ch.unchanged.map((v, i) => (
-                            <p key={i}>{v}</p>
-                          ))}
+                          <span className="eyebrow">PREVIOUSLY</span>
+                          <p>
+                            {ch.before ||
+                              "Not included in the previous review."}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="eyebrow">NOW</span>
+                          <p>{ch.after}</p>
                         </div>
                       </div>
-                    )}
-                  </article>
-                ))
-              ) : (
-                <div className="empty-review">
-                  <Check size={28} />
-                  <h3>No material changes</h3>
-                  <p>The findings remain unchanged in this revision.</p>
-                </div>
-              )}
-            </section>
-          ) : tab === "evidence" || !revision ? (
-            <section className="evidence-library">
-              <div className="section-heading">
-                <div>
-                  <h2>
-                    {revision
-                      ? "The submitted record"
-                      : "Your evidence is saved"}
-                  </h2>
-                  <p className="muted">
-                    {revision
-                      ? "Inspect original files and see how each record was read."
-                      : "Start a review when the evidence is ready. A failed review never becomes a finding."}
-                  </p>
-                </div>
-                {!running && !current.isExample && (
-                  <button
-                    className="button"
-                    disabled={busy || !current.sources.length}
-                    onClick={retry}
-                  >
-                    Review records <ArrowRight size={16} />
-                  </button>
+                      <p className="change-reason">{ch.reason}</p>
+                      <div className="source-buttons">
+                        {ch.sourceIds.map((id) => (
+                          <button
+                            className="citation"
+                            key={id}
+                            onClick={() => setInspect({ id })}
+                          >
+                            {current.sources.find((s) => s.id === id)?.title ||
+                              "Source"}{" "}
+                            <ArrowUpRight size={13} />
+                          </button>
+                        ))}
+                      </div>
+                      {!!ch.unchanged.length && (
+                        <div className="unchanged">
+                          <Check size={16} />
+                          <div>
+                            <strong>Preserved findings</strong>
+                            {ch.unchanged.map((v, i) => (
+                              <p key={i}>{v}</p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  ))
+                ) : (
+                  <div className="empty-review">
+                    <Check size={28} />
+                    <h3>No material changes</h3>
+                    <p>The findings remain unchanged in this revision.</p>
+                  </div>
                 )}
-              </div>
-              {current.sources.map((s, i) => (
-                <button
-                  className="source-row"
-                  key={s.id}
-                  onClick={() => setInspect({ id: s.id })}
-                >
-                  <span className="source-number">
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
-                  <FileText size={21} />
-                  <span className="source-row-main">
-                    <strong>{s.title}</strong>
-                    <small>
-                      {s.extractionMethod || s.kind} · {s.pageCount || "—"}{" "}
-                      page(s) · {Math.max(1, Math.round(s.size / 1024))} KB
-                    </small>
-                    {s.error && <small className="error-text">{s.error}</small>}
-                  </span>
-                  <span className={"source-status " + s.status}>
-                    {s.status === "ready" ? "Available" : s.status}
-                  </span>
-                  <ArrowUpRight size={17} />
-                </button>
-              ))}
-              {!current.sources.length && (
-                <div className="empty-review">
-                  <Upload size={28} />
-                  <h3>Add your first record</h3>
-                  <button
-                    className="button primary"
-                    onClick={() => setModal("add")}
-                  >
-                    Add evidence
-                  </button>
+              </section>
+            ) : tab === "evidence" || !revision ? (
+              <section className="evidence-library">
+                <div className="section-heading">
+                  <div>
+                    <h2>
+                      {revision
+                        ? "The submitted record"
+                        : "Your evidence is saved"}
+                    </h2>
+                    <p className="muted">
+                      {revision
+                        ? "Inspect original files and see how each record was read."
+                        : "Start a review when the evidence is ready. A failed review never becomes a finding."}
+                    </p>
+                  </div>
+                  {!running && !current.isExample && (
+                    <button
+                      className="button"
+                      disabled={busy || !current.sources.length}
+                      onClick={retry}
+                    >
+                      Review records <ArrowRight size={16} />
+                    </button>
+                  )}
                 </div>
-              )}
-            </section>
-          ) : (
-            <section className="empty-review">
-              <Search size={30} />
-              <h2>No itemized deductions identified</h2>
-              <p>
-                {revision?.audit?.warnings[0] ||
-                  "Add a deduction notice that states what was withheld and why."}
-              </p>
-              <button className="button" onClick={() => setTab("evidence")}>
-                Inspect submitted records
-              </button>
-            </section>
-          )}
+                {current.sources.map((s, i) => (
+                  <button
+                    className="source-row"
+                    aria-haspopup="dialog"
+                    key={s.id}
+                    onClick={() => setInspect({ id: s.id })}
+                  >
+                    <span className="source-number">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <FileText size={21} />
+                    <span className="source-row-main">
+                      <strong>{s.title}</strong>
+                      <small>
+                        {s.extractionMethod || s.kind} · {s.pageCount || "—"}{" "}
+                        page(s) · {Math.max(1, Math.round(s.size / 1024))} KB
+                      </small>
+                      {s.error && (
+                        <small className="error-text">{s.error}</small>
+                      )}
+                    </span>
+                    <span className={"source-status " + s.status}>
+                      {s.status === "ready" ? "Available" : s.status}
+                    </span>
+                    <ArrowUpRight size={17} />
+                  </button>
+                ))}
+                {!current.sources.length && (
+                  <div className="empty-review">
+                    <Upload size={28} />
+                    <h3>Add your first record</h3>
+                    <button
+                      className="button primary"
+                      onClick={() => setModal("add")}
+                    >
+                      Add evidence
+                    </button>
+                  </div>
+                )}
+              </section>
+            ) : (
+              <section className="empty-review">
+                <Search size={30} />
+                <h2>No itemized deductions identified</h2>
+                <p>
+                  {revision?.audit?.warnings[0] ||
+                    "Add a deduction notice that states what was withheld and why."}
+                </p>
+                <button className="button" onClick={() => setTab("evidence")}>
+                  Inspect submitted records
+                </button>
+              </section>
+            )}
+          </div>
         </main>
       )}
       <footer className="app-footer">
@@ -1071,6 +1155,7 @@ export default function App() {
             Export a copy first if you need to retain the review. This cannot be
             undone.
           </p>
+          {error && <ErrorNotice message={error} />}
           <div className="dialog-actions">
             <button className="button" onClick={() => setModal(null)}>
               Keep case

@@ -30,3 +30,48 @@ test("fifty-entry capacity is enforced", () => {
   assert.equal(cache.get("0"), undefined);
   assert.equal(cache.get("50"), 50);
 });
+
+test("concurrent cache work is deduplicated; scope deletion prevents repopulation", async () => {
+  const cache = new ReviewCache<{ result: number }>();
+  const key = cache.key("one", "record");
+  let calls = 0;
+  let release!: (value: { result: number }) => void;
+  const create = async () => {
+    calls++;
+    return new Promise<{ result: number }>((resolve) => {
+      release = resolve;
+    });
+  };
+  const a = cache.getOrCreate("one", key, create);
+  const b = cache.getOrCreate("one", key, create);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  cache.deleteScope("one");
+  release({ result: 1 });
+  const [first, shared] = await Promise.all([a, b]);
+  assert.equal(first.reused, false);
+  assert.equal(shared.reused, true);
+  assert.equal(cache.size(), 0);
+  first.value.result = 9;
+  assert.equal(shared.value.result, 1);
+  assert.equal(cache.stats().pending, 0);
+  await assert.rejects(
+    cache.getOrCreate("one", key, async () => {
+      throw new Error("invalid review");
+    }),
+  );
+  assert.equal(cache.size(), 0);
+  assert.equal(cache.stats().pending, 0);
+});
+test("cache evicts by retained bytes as well as entry count", () => {
+  const cache = new ReviewCache<string>(50, 1000, Date.now, 20);
+  cache.set("case", "one", "1234567890");
+  cache.set("case", "two", "1234567890");
+  assert.equal(cache.get("one"), undefined);
+  assert.equal(cache.size(), 1);
+  assert.ok(cache.stats().bytes <= 20);
+  cache.set("case", "huge", "x".repeat(100));
+  assert.equal(cache.get("huge"), undefined);
+  cache.clear();
+  assert.equal(cache.stats().bytes, 0);
+});

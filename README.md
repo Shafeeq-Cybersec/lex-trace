@@ -5,8 +5,7 @@
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Render-00b4d8?style=for-the-badge&logo=render&logoColor=white)](https://lex-trace.onrender.com)
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Shafeeq-Cybersec/lex-trace)
-[![Model](https://img.shields.io/badge/Gemini%203.6%20Flash-Multi--Key%20Failover-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
-[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+[![Model](https://img.shields.io/badge/Gemini%203.6%20Flash-Structured%20Evidence-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
 
 ---
 
@@ -27,7 +26,7 @@ Tenants lack the legal tooling to understand which deductions are substantiated,
 
 ## 💡 The Solution: TRACE
 
-**TRACE** is an evidence-review engine that organizes scattered records into an **inspectable, verifiable, and source-cited legal brief**:
+**TRACE** is an evidence-review engine that organizes scattered records into an **inspectable, verifiable, and source-cited preparation brief**:
 
 1. **Itemized Claim Extraction:** Identifies stated deductions and exact monetary amounts in INR without hallucinating generic charges.
 2. **Bi-directional Citation Linking:** Every claim and evidence item links directly to the exact page and excerpt of the original submitted document.
@@ -50,14 +49,14 @@ flowchart TD
         Files --> GeminiVision
     end
 
-    subgraph CoreEngine["2. Multi-Key GenAI Assessment Engine"]
-        KeyPool["Multi-API Key Pool<br/>(Automatic 429 Failover & Cooldown)"]
+    subgraph CoreEngine["2. Bounded GenAI Assessment Engine"]
+        RequestBudget["Bounded request budget<br/>(shared cooldown + one transient retry)"]
         StructuredPrompt["Strict Legal Evidence Instruction<br/>(No Legal Advice, INR Currency, Zod Schema)"]
         GeminiReconcile["Gemini 3.6 Flash<br/>Cross-Record Reconciliation"]
         
         NativeExtract --> GeminiReconcile
         GeminiVision --> GeminiReconcile
-        KeyPool --> GeminiReconcile
+        RequestBudget --> GeminiReconcile
         StructuredPrompt --> GeminiReconcile
     end
 
@@ -79,7 +78,7 @@ flowchart TD
 ```
 
 ### Key Technical Highlights:
-* **Multi-API Key Failover:** Built-in key rotation pool that seamlessly catches HTTP 429 rate limits, puts the exhausted key on cooldown, and rotates to healthy keys without aborting user review jobs.
+* **Bounded model budget:** One server-side credential, shared concurrency, a single transient-server retry and provider cooldown. TRACE does not multiply requests or rotate keys to bypass quotas.
 * **Dual-Stage Guardrail:** A deterministic substring validation ensures quotes actually exist on the cited page; followed by a secondary bounded Gemini semantic call ensuring claims do not overstep into legal liability determinations.
 * **Pure Provenance:** User statements are explicitly marked as *attributed statements*, not facts. Invoices establish billing, not necessity or proof of payment.
 
@@ -141,7 +140,7 @@ Open [http://127.0.0.1:5173/](http://127.0.0.1:5173/) in your browser.
 TRACE includes a deterministic test suite with zero external paid model dependencies:
 
 ```bash
-# Run unit & integration tests (15 suites covering SQLite, Zod, CSRF, key failover)
+# Run deterministic unit & integration tests (including SQLite, Zod, CSRF, caching and model-budget guards)
 npm test
 
 # Static type verification
@@ -172,7 +171,7 @@ npm audit --omit=dev
 │   └── live-verification.json # Live model verification telemetry
 ├── public/samples/          # Fictional test files (PDFs, text chats)
 ├── server/
-│   ├── ai.ts                # Gemini extraction, multi-key failover & verification
+│   ├── ai.ts                # Gemini extraction, bounded assessment & verification
 │   ├── reconciler.ts        # Revision snapshots and diff calculation
 │   ├── storage.ts           # SQLite WAL persistence and blob storage
 │   └── index.ts             # Express REST API and background job queue

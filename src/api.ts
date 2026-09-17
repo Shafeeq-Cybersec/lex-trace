@@ -75,10 +75,13 @@ export const addDemoAddition = (id: string) =>
     { method: "POST", body: "{}" },
   );
 export const retryReview = (id: string) =>
-  request<{ jobId: string }>("/case/" + id + "/review", {
-    method: "POST",
-    body: "{}",
-  });
+  request<{ jobId: string | null; message?: string }>(
+    "/case/" + id + "/review",
+    {
+      method: "POST",
+      body: "{}",
+    },
+  );
 export const addStatement = (id: string, text: string, title: string) =>
   request<{ jobId: string | null; message?: string }>(
     "/case/" + id + "/statement",
