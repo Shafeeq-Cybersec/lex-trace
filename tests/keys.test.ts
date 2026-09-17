@@ -91,8 +91,8 @@ test("429 imposes a shared cooldown with zero immediate retries or key rotation"
   await assert.rejects(gateway.generate("three", {}), /cooldown/);
   assert.equal(calls, 2);
 });
-test("auth and network failures do not retry or expose provider content", async () => {
-  for (const status of [400, 401, 403, 404, undefined]) {
+test("auth and client failures do not retry or expose provider content", async () => {
+  for (const status of [400, 401, 403, 404]) {
     const gateway = createJSONGenerator(async () => {
       throw Object.assign(new Error("PRIVATE_EVIDENCE_AND_SECRET"), { status });
     });

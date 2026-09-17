@@ -307,8 +307,7 @@ export function createJSONGenerator(
           }
           if (
             attempt === 0 &&
-            status !== undefined &&
-            [500, 502, 503, 504].includes(status) &&
+            (status === undefined || [500, 502, 503, 504].includes(status)) &&
             remaining > 1_000 &&
             !signal.aborted
           ) {
