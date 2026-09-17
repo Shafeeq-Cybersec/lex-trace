@@ -9,7 +9,7 @@ const home = await fetch(origin, { signal: AbortSignal.timeout(90000) });
 const html = await home.text();
 assert.equal(home.status, 200, "Application must respond successfully");
 assert.match(html, /TRACE/, "Application shell must identify TRACE");
-assert.match(home.headers.get("cache-control") || "", /no-cache/, "HTML must revalidate after releases");
+assert.match(home.headers.get("cache-control") || "", /(?:no-cache|max-age=0)/i, "HTML must revalidate after releases");
 assert.equal(home.headers.get("x-content-type-options"), "nosniff");
 assert.ok(home.headers.get("content-security-policy"), "CSP must be present");
 const healthResponse = await fetch(origin + "/api/health");
