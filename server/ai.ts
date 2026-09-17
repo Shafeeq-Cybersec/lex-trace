@@ -229,7 +229,7 @@ export function createJSONGenerator(
   const sleep =
     options.sleep ||
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const timeoutMs = options.timeoutMs || 75_000;
+  const timeoutMs = options.timeoutMs || 120_000;
   const concurrency = options.concurrency || 2;
   let cooldownUntil = 0;
   let active = 0;

@@ -37,6 +37,7 @@ test("provider allows only one transient retry within one total deadline", async
       return response;
     },
     {
+      timeoutMs: 75000,
       now: () => now,
       sleep: async (ms) => {
         now += ms;
